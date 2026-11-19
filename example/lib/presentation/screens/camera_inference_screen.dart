@@ -1,243 +1,262 @@
-// Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
-import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
-import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:ultralytics_yolo/ultralytics_yolo.dart';
-import 'package:ultralytics_yolo/core/yolo_model_manager.dart';
-import 'package:ultralytics_yolo/core/yolo_model_resolver.dart';
 
-/// Real-time YOLO camera inference. Thin shell over [YOLOShowcase] that wires the capture callback to the platform
-/// share sheet via `share_plus` and stamps the live app version in the bottom-left (matching `yolo-ios-app`). Kept
-/// intentionally bare so the screen reads side-by-side with `yolo-ios-app`'s `ViewController` — no extra Material
-/// chrome on top.
 class CameraInferenceScreen extends StatefulWidget {
   const CameraInferenceScreen({super.key});
 
   @override
-  State<CameraInferenceScreen> createState() => _CameraInferenceScreenState();
+  State<CameraInferenceScreen> createState() =>
+      _CameraInferenceScreenState();
 }
 
-class _CameraInferenceScreenState extends State<CameraInferenceScreen> {
-  String? _versionLabel;
-  YOLOInstalledModel? _model;
-  StreamSubscription<Uri>? _links;
-  StreamSubscription<DownloadProgress>? _progress;
-  String? _importId;
-  Future<void>? _activeImport;
-  double _fraction = 0;
+class _CameraInferenceScreenState
+    extends State<CameraInferenceScreen> {
+  // ESP32-CAM BLE settings
+  static const String deviceName = 'BirdAI-ESP32';
 
-  @override
-  void initState() {
-    super.initState();
-    _loadVersion();
-    _links = AppLinks().uriLinkStream.listen(
-      (uri) => unawaited(_importModel(uri.toString())),
-    );
-    _progress = YOLOModelManager.downloadProgress.listen((progress) {
-      if (mounted && progress.modelId == _importId) {
-        setState(() => _fraction = progress.fraction);
-      }
-    });
-  }
+  static final Guid serviceUuid =
+      Guid('12345678-1234-1234-1234-123456789000');
+
+  static final Guid characteristicUuid =
+      Guid('12345678-1234-1234-1234-123456789001');
+
+  BluetoothDevice? _device;
+  BluetoothCharacteristic? _characteristic;
+
+  bool _connected = false;
+  bool _connecting = false;
+  bool _sending = false;
+
+  String _status = 'ยังไม่ได้เชื่อมต่อ ESP32';
+
+  int _birdFrames = 0;
+  int _emptyFrames = 0;
+
+  bool _birdActive = false;
 
   @override
   void dispose() {
-    _links?.cancel();
-    _progress?.cancel();
+    FlutterBluePlus.stopScan();
+    _device?.disconnect();
     super.dispose();
   }
 
-  Future<void> _importModel(String link) async {
-    if (_activeImport != null) return;
-    _activeImport = _resolveAndImportModel(link);
-    try {
-      await _activeImport;
-    } finally {
-      _activeImport = null;
-    }
-  }
+  // Connect to ESP32-CAM
+  Future<void> _connectBLE() async {
+    if (_connecting || _connected) return;
 
-  Future<void> _resolveAndImportModel(String link) async {
+    setState(() {
+      _connecting = true;
+      _status = 'กำลังค้นหา ESP32...';
+    });
+
     try {
-      final uri = Uri.parse(link);
-      final parts = uri.pathSegments;
-      if (uri.scheme != 'https' ||
-          uri.host != 'platform.ultralytics.com' ||
-          uri.hasPort ||
-          uri.userInfo.isNotEmpty ||
-          parts.length != 3 ||
-          parts[0] != 'deploy' ||
-          parts[1] != 'mobile' ||
-          !RegExp(r'^[0-9a-f]{24}$').hasMatch(parts[2]) ||
-          uri.fragment.length > 128) {
-        throw const FormatException(
-          'Scan a model QR code from Ultralytics Platform.',
-        );
+      if (!await FlutterBluePlus.isSupported) {
+        throw Exception('โทรศัพท์ไม่รองรับ Bluetooth');
       }
-      final client = HttpClient();
-      Map<String, dynamic> descriptor;
-      try {
-        final request = await client.postUrl(
-          Uri.https(
-            'platform.ultralytics.com',
-            '/api/mobile/models/${parts[2]}',
-          ),
-        );
-        request.headers.contentType = ContentType.json;
-        request.write(jsonEncode(Uri.splitQueryString(uri.fragment)));
-        final response = await request.close();
-        if (response.statusCode != HttpStatus.ok) {
-          throw const FormatException(
-            'Import link expired or unavailable. Create a new QR code in Platform.',
-          );
+
+      await FlutterBluePlus.startScan(
+        withNames: [deviceName],
+        timeout: const Duration(seconds: 10),
+      );
+
+      await FlutterBluePlus.isScanning
+          .where((scanning) => scanning == false)
+          .first;
+
+      final results = FlutterBluePlus.lastScanResults;
+
+      final matches = results.where((r) =>
+          r.device.platformName == deviceName ||
+          r.advertisementData.advName == deviceName);
+
+      if (matches.isEmpty) {
+        throw Exception('ไม่พบ BirdAI-ESP32');
+      }
+
+      final device = matches.first.device;
+
+      await device.connect(
+        timeout: const Duration(seconds: 15),
+      );
+
+      final services = await device.discoverServices();
+
+      BluetoothCharacteristic? target;
+
+      for (final service in services) {
+        if (service.uuid == serviceUuid) {
+          for (final characteristic
+              in service.characteristics) {
+            if (characteristic.uuid ==
+                characteristicUuid) {
+              target = characteristic;
+              break;
+            }
+          }
         }
-        descriptor =
-            jsonDecode(await utf8.decoder.bind(response).join())
-                as Map<String, dynamic>;
-      } finally {
-        client.close(force: true);
       }
-      final task = YOLOTaskParsing.tryParse(descriptor['task'] as String?);
-      final format = descriptor['format'];
-      final extension = {'litert': 'tflite', 'coreml': 'mlpackage.zip'}[format];
-      final download = Uri.parse(descriptor['downloadUrl'] as String);
-      if (descriptor['version'] != 1 ||
-          descriptor['exportId'] != parts[2] ||
-          task == null ||
-          extension == null ||
-          descriptor['filename'] != '${parts[2]}.$extension' ||
-          download.scheme != 'https' ||
-          (descriptor['size'] as num) <= 0 ||
-          (Platform.isAndroid ? format != 'litert' : format == 'litert')) {
-        throw const FormatException(
-          'This export is incompatible with this device. Export LiteRT for Android or Core ML for iPhone.',
-        );
+
+      if (target == null) {
+        await device.disconnect();
+        throw Exception('ไม่พบ BLE Characteristic');
       }
-      final existing = (await YOLOModelManager.installedModels())
-          .where((model) => model.id == parts[2])
-          .firstOrNull;
-      if (!mounted) return;
-      if (existing != null) {
-        setState(() => _model = existing);
-        return;
-      }
-      final name = descriptor['name'] as String;
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text(name),
-          content: Text(
-            '${task.label} · ${((descriptor['size'] as num) / (1024 * 1024)).toStringAsFixed(1)} MB\nDownload for offline use?',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Download'),
-            ),
-          ],
-        ),
-      );
-      if (!mounted || confirmed != true) return;
-      setState(() {
-        _importId = parts[2];
-        _fraction = 0;
+
+      _device = device;
+      _characteristic = target;
+
+      device.connectionState.listen((state) {
+        if (!mounted) return;
+
+        if (state == BluetoothConnectionState.disconnected) {
+          setState(() {
+            _connected = false;
+            _characteristic = null;
+            _status = 'ESP32 หลุดการเชื่อมต่อ';
+          });
+        }
       });
-      YOLOModelManager.clearDownloadCancellation(parts[2]);
-      final resolved = await YOLOModelResolver.resolve(
-        modelPath: download.toString(),
-        task: task,
-        filename: descriptor['filename'] as String,
-        expectedSize: (descriptor['size'] as num).toInt(),
-      );
-      final model = YOLOInstalledModel(
-        id: parts[2],
-        name: name,
-        task: task,
-        path: resolved.modelPath,
-      );
-      await YOLOModelManager.saveInstalledModel(model);
-      if (mounted) setState(() => _model = model);
-    } catch (error) {
+
+      if (!mounted) return;
+
+      setState(() {
+        _connected = true;
+        _status = 'เชื่อมต่อ BirdAI-ESP32 แล้ว';
+      });
+    } catch (e) {
       if (mounted) {
-        final message = switch (error) {
-          FormatException() => error.message,
-          YOLOException() => error.message,
-          _ =>
-            'Model import failed. Check your connection and scan a new code.',
-        };
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(message)));
+        setState(() {
+          _status = 'เชื่อมต่อไม่สำเร็จ: $e';
+        });
       }
     } finally {
-      if (mounted) setState(() => _importId = null);
+      if (mounted) {
+        setState(() {
+          _connecting = false;
+        });
+      }
     }
   }
 
-  Future<void> _loadVersion() async {
-    final info = await PackageInfo.fromPlatform();
-    if (!mounted) return;
-    // Match yolo-ios-app's `labelVersion`: "v<version> (<build>)".
-    setState(() => _versionLabel = 'v${info.version} (${info.buildNumber})');
+  // Send command to ESP32
+  Future<void> _sendCommand(String command) async {
+    if (!_connected ||
+        _characteristic == null ||
+        _sending) {
+      return;
+    }
+
+    _sending = true;
+
+    try {
+      await _characteristic!.write(
+        utf8.encode(command),
+      );
+
+      if (mounted) {
+        setState(() {
+          _status = 'ส่งคำสั่ง $command แล้ว';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _status = 'ส่งคำสั่งไม่สำเร็จ: $e';
+        });
+      }
+    } finally {
+      _sending = false;
+    }
   }
 
-  Future<void> _onCapture(Uint8List bytes) async {
-    // Capture the share-sheet anchor BEFORE any async gap (no BuildContext use after await). iOS 26 gives the activity
-    // controller a popoverPresentationController even on iPhone; without a valid source rect the popover anchors at
-    // (0,0) and can present/dismiss incorrectly (and it is required on iPad). Use the screen's render box.
-    final box = context.findRenderObject() as RenderBox?;
-    final origin = box != null && box.hasSize
-        ? box.localToGlobal(Offset.zero) & box.size
-        : null;
+  // Receive YOLO detection results
+  void _onYOLOResult(List<YOLOResult> results) {
+    final birdDetected = results.any((result) =>
+        result.className.toLowerCase() == 'bird' &&
+        result.confidence >= 0.55);
 
-    final dir = await getTemporaryDirectory();
-    final file = File('${dir.path}/yolo_capture.jpg')..writeAsBytesSync(bytes);
+    if (birdDetected) {
+      _birdFrames++;
+      _emptyFrames = 0;
 
-    await SharePlus.instance.share(
-      ShareParams(
-        files: [XFile(file.path)],
-        text: 'Ultralytics YOLO',
-        sharePositionOrigin: origin,
-      ),
-    );
+      if (_birdFrames >= 3 && !_birdActive) {
+        _birdActive = true;
+        unawaited(_sendCommand('BIRD'));
+      }
+    } else {
+      _emptyFrames++;
+      _birdFrames = 0;
+
+      if (_emptyFrames >= 15 && _birdActive) {
+        _birdActive = false;
+        unawaited(_sendCommand('STOP'));
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Show all 7 tasks (Detect / Segment / Semantic / Depth / Classify / Pose / OBB) to match the iOS app's task control.
     return Scaffold(
       body: Stack(
         children: [
-          YOLOShowcase(
-            versionLabel: _versionLabel,
-            onCapture: _onCapture,
-            model: _model,
-            onImportModel: _importModel,
+          // YOLO live camera
+          YOLOView(
+            modelPath: 'yolo26n',
+            task: YOLOTask.detect,
+            confidenceThreshold: 0.25,
+            onResult: _onYOLOResult,
           ),
-          if (_importId != null)
-            Positioned.fill(
-              child: ModelSwitchLoadingOverlay(
-                statusText: _fraction < 1
-                    ? 'Downloading model'
-                    : 'Installing model',
-                progress: _fraction < 1 ? _fraction : null,
-                onCancel: _fraction >= 1
-                    ? null
-                    : () => YOLOModelManager.cancelDownload(_importId!),
+
+          // BLE connection panel
+          Positioned(
+            top: 45,
+            left: 15,
+            right: 15,
+            child: Card(
+              color: Colors.black87,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  children: [
+                    Text(
+                      _status,
+                      style: const TextStyle(
+                        color: Colors.white,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 10),
+                    ElevatedButton(
+                      onPressed:
+                          (_connected || _connecting)
+                              ? null
+                              : _connectBLE,
+                      child: Text(
+                        _connecting
+                            ? 'กำลังเชื่อมต่อ...'
+                            : _connected
+                                ? 'เชื่อมต่อแล้ว'
+                                : 'เชื่อมต่อ ESP32-CAM',
+                      ),
+                    ),
+                    Text(
+                      'BLE: ${_connected ? "CONNECTED" : "DISCONNECTED"}',
+                      style: TextStyle(
+                        color: _connected
+                            ? Colors.greenAccent
+                            : Colors.redAccent,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
+          ),
         ],
       ),
     );
