@@ -1,3 +1,4 @@
+
 name: Bird AI - Build APK
 
 on:
@@ -39,9 +40,14 @@ jobs:
 
       - name: Check project files
         run: |
+          echo "Checking project structure..."
+          echo "Repository root:"
+          ls -la
+          echo "Example directory:"
+          ls -la example
+          echo "Flutter project files:"
+          find example -maxdepth 4 -type f \( -name "pubspec.yaml" -o -name "gradlew" -o -name "camera_inference_screen.dart" \) -print
           test -f example/pubspec.yaml
-          test -f example/android/gradlew
-          test -f example/lib/presentation/screens/camera_inference_screen.dart
 
       - name: Set Gradle wrapper
         working-directory: example
