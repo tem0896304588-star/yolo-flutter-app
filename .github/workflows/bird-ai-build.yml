@@ -1,72 +1,78 @@
 name: Bird AI - Build APK
 
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - 'example/**'
-      - '.github/workflows/bird-ai-build.yml'
+workflow_dispatch:
+push:
+branches:
+- main
+paths:
+- 'example/'
+- 'android/'
+- '.github/workflows/bird-ai-build.yml'
 
 permissions:
-  contents: read
+contents: read
 
 concurrency:
-  group: bird-ai-apk-${{ github.ref }}
-  cancel-in-progress: true
+group: bird-ai-apk-${{ github.ref }}
+cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build Bird AI APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+build:
+name: Build Bird AI APK
+runs-on: ubuntu-latest
+timeout-minutes: 45
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+steps:  
+  - name: Checkout repository  
+    uses: actions/checkout@v4  
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+  - name: Copy Gradle Wrapper  
+    run: |  
+      cp android/gradlew example/android/gradlew  
+      mkdir -p example/android/gradle/wrapper  
+      cp android/gradle/wrapper/gradle-wrapper.jar example/android/gradle/wrapper/  
+      chmod +x example/android/gradlew  
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
+  - name: Set up Java  
+    uses: actions/setup-java@v4  
+    with:  
+      distribution: temurin  
+      java-version: '17'  
 
-      - name: Check Flutter
-        run: flutter --version
+  - name: Set up Flutter  
+    uses: subosito/flutter-action@v2  
+    with:  
+      channel: stable  
+      cache: true  
 
-      - name: Check project files
-        run: |
-          echo "Checking Bird AI project..."
-          test -f example/pubspec.yaml
-          test -f example/android/gradlew
-          test -f example/android/gradle/wrapper/gradle-wrapper.properties
-          echo "Gradle wrapper configuration:"
-          cat example/android/gradle/wrapper/gradle-wrapper.properties
+  - name: Check Flutter  
+    run: flutter --version  
 
-      - name: Install dependencies
-        working-directory: example
-        run: flutter pub get
+  - name: Check project files  
+    run: |  
+      test -f example/pubspec.yaml  
+      test -f example/android/gradlew  
+      test -f example/android/gradle/wrapper/gradle-wrapper.jar  
+      test -f example/android/gradle/wrapper/gradle-wrapper.properties  
 
-      - name: Build release APK
-        working-directory: example
-        run: flutter build apk --release
+  - name: Install dependencies  
+    working-directory: example  
+    run: flutter pub get  
 
-      - name: Verify APK
-        run: |
-          test -f example/build/app/outputs/flutter-apk/app-release.apk
-          ls -lh example/build/app/outputs/flutter-apk/app-release.apk
+  - name: Build release APK  
+    working-directory: example  
+    run: flutter build apk --release  
 
-      - name: Upload Bird AI APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Bird-AI-APK
-          path: example/build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
-          retention-days: 7
+  - name: Verify APK  
+    run: |  
+      test -f example/build/app/outputs/flutter-apk/app-release.apk  
+      ls -lh example/build/app/outputs/flutter-apk/app-release.apk  
+
+  - name: Upload Bird AI APK  
+    uses: actions/upload-artifact@v4  
+    with:  
+      name: Bird-AI-APK  
+      path: example/build/app/outputs/flutter-apk/app-release.apk  
+      if-no-files-found: error  
+      retention-days: 7
