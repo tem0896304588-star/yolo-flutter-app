@@ -1,4 +1,3 @@
-
 name: Bird AI - Build APK
 
 on:
@@ -12,6 +11,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: bird-ai-apk-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -40,17 +43,12 @@ jobs:
 
       - name: Check project files
         run: |
-          echo "Checking project structure..."
-          ls -la
-          ls -la example
+          echo "Checking Bird AI project..."
           test -f example/pubspec.yaml
+          test -f example/android/gradlew
           test -f example/android/gradle/wrapper/gradle-wrapper.properties
-
-      - name: Upgrade Gradle Wrapper
-        working-directory: example
-        run: |
-          sed -i -E 's#gradle-[0-9.]+-(all|bin)\.zip#gradle-9.1.3-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
-          cat android/gradle/wrapper/gradle-wrapper.properties
+          echo "Gradle wrapper configuration:"
+          cat example/android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Install dependencies
         working-directory: example
@@ -60,6 +58,11 @@ jobs:
         working-directory: example
         run: flutter build apk --release
 
+      - name: Verify APK
+        run: |
+          test -f example/build/app/outputs/flutter-apk/app-release.apk
+          ls -lh example/build/app/outputs/flutter-apk/app-release.apk
+
       - name: Upload Bird AI APK
         uses: actions/upload-artifact@v4
         with:
@@ -67,4 +70,3 @@ jobs:
           path: example/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 7
-          
