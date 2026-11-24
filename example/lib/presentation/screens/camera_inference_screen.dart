@@ -104,6 +104,7 @@ class _CameraInferenceScreenState
       setState(() => _status = 'กำลังเชื่อมต่อ...');
 
       await device.connect(
+        license: License.nonprofit,
         timeout: const Duration(seconds: 15),
       );
 
