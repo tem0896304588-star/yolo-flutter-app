@@ -15,7 +15,7 @@ def hasReleaseSigning = keystoreProperties["storeFile"] &&
     (keystoreProperties["keyPassword"] ?: System.getenv("ANDROID_KEY_PASSWORD")) &&
     (keystoreProperties["storePassword"] ?: System.getenv("ANDROID_STORE_PASSWORD"))
 
-// Snapdragon NPU (QNN) runtime is optional and OFF by default — it adds ~230 MB of uncompressed arm64 native libs.
+// Snapdragon NPU (QNN) runtime is optional and OFF by default.
 def qnnEnabled = project.hasProperty("qnn") || (System.getenv("ENABLE_QNN") in ["1", "true", "TRUE", "yes"])
 
 kotlin {
@@ -55,6 +55,9 @@ android {
         release {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.release
+            } else {
+                // Allows a locally/test-built release APK to be installed when no release keystore is configured.
+                signingConfig = signingConfigs.debug
             }
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
